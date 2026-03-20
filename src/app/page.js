@@ -1,88 +1,147 @@
 "use client";
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Pusher from 'pusher-js';
 import axios from 'axios';
 
+// Components import kar rahe hain
+import Login from '@/components/Login';
+import Sidebar from '@/components/Sidebar';
+import ChatWindow from '@/components/ChatWindow';
+
 export default function Home() {
+  // Auth & User States
+  const [currentUser, setCurrentUser] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(null);
+  
+  // Login Form States
+  const [phoneInput, setPhoneInput] = useState('');
+  const [pinInput, setPinInput] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  // Chat States
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  // Abhi ke liye manually user set kar rahe hain, baad mein aap login add kar sakte hain
-  const [user, setUser] = useState('Me'); 
+  const [showEmoji, setShowEmoji] = useState(false);
+  const messagesEndRef = useRef(null);
 
+  // 1. Check if user is logged in (Local Storage)
   useEffect(() => {
-    // Purane messages load karein
-    axios.get('/api/messages').then((res) => setMessages(res.data));
+    const storedUser = localStorage.getItem('messenger_user');
+    if (storedUser) setCurrentUser(JSON.parse(storedUser));
+  }, []);
 
-    // Pusher setup for real-time
+  // 2. Fetch Users List for Sidebar
+  useEffect(() => {
+    if (currentUser) {
+      axios.get('/api/users')
+        .then((res) => setUsers(res.data))
+        .catch(console.error);
+    }
+  }, [currentUser]);
+
+  // 3. Fetch Messages & Setup Pusher real-time connection
+  useEffect(() => {
+    if (!currentUser || !selectedUser) return;
+
+    // Purane messages laao
+    axios.post('/api/messages', { 
+      action: "fetch", 
+      senderId: currentUser.phone, 
+      receiverId: selectedUser.phone 
+    }).then((res) => {
+      setMessages(res.data);
+      scrollToBottom();
+    });
+
+    // Pusher setup
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_APP_KEY, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
     });
 
-    const channel = pusher.subscribe('chat-room');
+    // Unique room name banayein (taaki messages sirf in dono ke paas jayein)
+    const channelName = `chat-${[currentUser.phone, selectedUser.phone].sort().join('-')}`;
+    const channel = pusher.subscribe(channelName);
+    
     channel.bind('new-message', function (data) {
       setMessages((prev) => [...prev, data]);
+      scrollToBottom();
     });
 
-    return () => {
-      pusher.unsubscribe('chat-room');
-    };
-  }, []);
+    return () => pusher.unsubscribe(channelName);
+  }, [currentUser, selectedUser]);
 
-  const sendMessage = async (e) => {
-    e.preventDefault();
-    if (!input) return;
-
-    const messageData = { sender: user, text: input };
-    setInput(''); // Input box clear karein
-
-    await axios.post('/api/messages', messageData);
+  // Auto-scroll to bottom
+  const scrollToBottom = () => {
+    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   };
 
+  // Login Function
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError('');
+    try {
+      const res = await axios.post('/api/auth', { phone: phoneInput, name: "User", pin: pinInput });
+      localStorage.setItem('messenger_user', JSON.stringify(res.data));
+      setCurrentUser(res.data);
+    } catch (error) {
+      setLoginError(error.response?.data?.error || "Login Failed");
+    }
+  };
+
+  // Logout Function
+  const handleLogout = () => {
+    if(window.confirm("Log out of workspace?")) {
+      localStorage.removeItem('messenger_user');
+      setCurrentUser(null);
+      setSelectedUser(null);
+      setPhoneInput('');
+      setPinInput('');
+    }
+  };
+
+  // Send Message Function
+  const sendMessage = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || !selectedUser) return;
+
+    const messageData = { senderId: currentUser.phone, receiverId: selectedUser.phone, text: input };
+    setInput('');
+    setShowEmoji(false);
+    
+    try {
+      await axios.post('/api/messages', messageData);
+    } catch (error) {
+      console.error("Error sending message:", error);
+    }
+  };
+
+  // Emoji Click Handler
+  const onEmojiClick = (emojiObject) => setInput((prev) => prev + emojiObject.emoji);
+
+  // Agar user logged in nahi hai, toh Login page dikhao
+  if (!currentUser) {
+    return <Login {...{handleLogin, phoneInput, setPhoneInput, pinInput, setPinInput, loginError}} />;
+  }
+
+  // Agar user logged in hai, toh Main App Layout dikhao (Mobile Responsive)
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
-      <div className="w-full max-w-md bg-white rounded-lg shadow-md p-6">
-        
-        {/* User Selection (Aap 'Me' ya 'GF' select kar sakte hain test karne ke liye) */}
-        <div className="mb-4 flex justify-between items-center">
-          <h1 className="text-xl font-bold">Our Private Chat ❤️</h1>
-          <select 
-            value={user} 
-            onChange={(e) => setUser(e.target.value)} 
-            className="border p-1 rounded"
-          >
-            <option value="Me">Me</option>
-            <option value="GF">GF</option>
-          </select>
-        </div>
-
-        {/* Chat Box */}
-        <div className="h-80 overflow-y-auto mb-4 p-2 border rounded bg-gray-50 flex flex-col space-y-2">
-          {messages.map((msg, index) => (
-            <div 
-              key={index} 
-              className={`p-2 rounded-lg max-w-[70%] ${msg.sender === user ? 'bg-blue-500 text-white self-end' : 'bg-gray-300 text-black self-start'}`}
-            >
-              <p className="text-xs text-gray-200 mb-1">{msg.sender}</p>
-              <p>{msg.text}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Input Form */}
-        <form onSubmit={sendMessage} className="flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            className="flex-1 border p-2 rounded outline-none"
-            placeholder="Type a message..."
-          />
-          <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-            Send
-          </button>
-        </form>
-
+    <div className="flex h-[100dvh] overflow-hidden bg-slate-50 font-sans w-full max-w-[100vw]">
+      
+      {/* Sidebar Component */}
+      <div className={`w-full md:w-80 h-full flex-shrink-0 ${selectedUser ? 'hidden md:block' : 'block'}`}>
+        <Sidebar {...{users, currentUser, selectedUser, setSelectedUser, handleLogout}} />
       </div>
+
+      {/* ChatWindow Component */}
+      <div className={`flex-1 h-full w-full ${!selectedUser ? 'hidden md:flex' : 'flex'}`}>
+        <ChatWindow {...{
+          selectedUser, currentUser, messages, input, setInput, 
+          sendMessage, showEmoji, setShowEmoji, onEmojiClick, 
+          messagesEndRef, setSelectedUser
+        }} />
+      </div>
+
     </div>
   );
 }

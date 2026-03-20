@@ -11,23 +11,32 @@ const pusher = new Pusher({
   useTLS: true,
 });
 
-// Purane messages fetch karne ke liye
-export async function GET() {
-  await connectMongoDB();
-  const messages = await Message.find().sort({ createdAt: 1 });
-  return NextResponse.json(messages);
-}
-
-// Naya message bhejne ke liye
+// Purane messages laane ke liye (sirf un 2 logon ke beech ke)
 export async function POST(request) {
-  const { sender, text } = await request.json();
-  await connectMongoDB();
+  try {
+    const { senderId, receiverId, text, action } = await request.json();
+    await connectMongoDB();
 
-  // Database mein save karo
-  const newMessage = await Message.create({ sender, text });
+    // Agar action "fetch" hai, toh messages return karo
+    if (action === "fetch") {
+      const messages = await Message.find({
+        $or: [
+          { senderId: senderId, receiverId: receiverId },
+          { senderId: receiverId, receiverId: senderId }
+        ]
+      }).sort({ createdAt: 1 });
+      return NextResponse.json(messages);
+    }
 
-  // Pusher ke through real-time mein sabko bhejo
-  await pusher.trigger('chat-room', 'new-message', newMessage);
+    // Warna naya message save karo
+    const newMessage = await Message.create({ senderId, receiverId, text });
 
-  return NextResponse.json({ message: "Message sent!" }, { status: 201 });
+    // Ek unique channel ID banayein dono phone numbers ko jodkar
+    const channelName = `chat-${[senderId, receiverId].sort().join('-')}`;
+    await pusher.trigger(channelName, 'new-message', newMessage);
+
+    return NextResponse.json({ message: "Sent!" }, { status: 201 });
+  } catch (error) {
+    return NextResponse.json({ error: "Failed to process message" }, { status: 500 });
+  }
 }
